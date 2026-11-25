@@ -1,2 +1,4 @@
 User-agent: *
 Disallow: /onizleme/
+
+Sitemap: https://mehtapaltan.com/sitemap.xml
