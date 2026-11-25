@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Önizleme · Mehtap Altan</title>
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Lora:ital,wght@0,400;0,500;1,400&display=swap">
+  <style id="kilit-stil">
+    :root { --ivory: #fbf7ef; --ink: #2f2a25; --mist: #6f665b; --olive: #565b3a; --rose: #9c5546; --gold: #b08a3e; --line: #e4d9c6; }
+    * { box-sizing: border-box; }
+    .kilit { min-height: 100vh; margin: 0; display: grid; place-content: center; padding: 2rem 1.5rem; background: var(--ivory); color: var(--ink); font-family: "Lora", Georgia, serif; text-align: center; }
+    .kilit h1 { font-family: "Cormorant Garamond", Garamond, serif; font-weight: 500; color: var(--olive); font-size: clamp(2.4rem, 8vw, 3.5rem); margin: 0; }
+    .kilit p { color: var(--mist); margin: .5rem 0 1.75rem; }
+    .kilit form { display: grid; gap: .75rem; width: min(20rem, 100%); margin: 0 auto; }
+    .kilit label { font-size: .95rem; text-align: left; }
+    .kilit input { font: inherit; padding: .7rem .9rem; border: 1px solid var(--line); border-radius: .5rem; background: #fffdf8; color: var(--ink); }
+    .kilit input:focus { outline: 2px solid var(--gold); outline-offset: 1px; }
+    .kilit button { font: inherit; color: var(--ivory); background: var(--olive); border: 0; border-radius: 999px; padding: .65rem 1.4rem; cursor: pointer; }
+    .kilit button:hover { background: var(--rose); }
+    .kilit button:disabled { opacity: .6; cursor: wait; }
+    .kilit .durum { min-height: 1.5em; margin: 0; font-size: .95rem; color: var(--rose); }
+    .kilit .geri { display: inline-block; margin-top: 2rem; font-size: .85rem; color: var(--mist); }
+    .onizleme-rozeti { position: fixed; left: .75rem; bottom: .75rem; z-index: 50; font: .75rem/1 "Lora", Georgia, serif; color: #fbf7ef; background: rgba(86, 91, 58, .92); padding: .45rem .7rem; border-radius: 999px; }
+  </style>
+</head>
+<body class="kilit">
+  <h1>Önizleme</h1>
+  <p>Site yayına hazırlanıyor. Görmek için şifreyi girin.</p>
+  <form id="giris">
+    <label for="sifre">Şifre</label>
+    <input id="sifre" type="password" autocomplete="current-password" required>
+    <button type="submit">Aç</button>
+    <p class="durum" role="status" aria-live="polite"></p>
+  </form>
+  <a class="geri" href="../">Ana sayfaya dön</a>
+
+  <script>
+  /* Şifreli önizleme yükleyicisi.
+     kasa.bin = [16 bayt tuz][12 bayt IV][AES-GCM şifreli veri]. Anahtar: PBKDF2-SHA256, 600.000 tur.
+     Çözülen veri = [4 bayt dizin uzunluğu][dizin JSON][dosya baytları]. Site sayfaları bu sayfanın içinde açılır. */
+  (() => {
+    const TUR = 600000;
+    const SAKLA = "ma-onizleme-anahtar";
+    const form = document.getElementById("giris");
+    const durum = form.querySelector(".durum");
+    const dugme = form.querySelector("button");
+
+    async function anahtarUret(sifre, tuz) {
+      const ham = await crypto.subtle.importKey("raw", new TextEncoder().encode(sifre), "PBKDF2", false, ["deriveKey"]);
+      return crypto.subtle.deriveKey({ name: "PBKDF2", salt: tuz, iterations: TUR, hash: "SHA-256" }, ham, { name: "AES-GCM", length: 256 }, true, ["decrypt"]);
+    }
+
+    async function coz(anahtar, kasa) {
+      const iv = kasa.slice(16, 28);
+      const acik = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, anahtar, kasa.slice(28)));
+      const dizinBoyu = new DataView(acik.buffer).getUint32(0);
+      const dizin = JSON.parse(new TextDecoder().decode(acik.subarray(4, 4 + dizinBoyu)));
+      const govde = acik.subarray(4 + dizinBoyu);
+      const dosyalar = new Map();
+      for (const d of dizin) dosyalar.set(d.yol, { tur: d.tur, bayt: govde.subarray(d.bas, d.bas + d.boy) });
+      return dosyalar;
+    }
+
+    async function kasaGetir() {
+      const yanit = await fetch("kasa.bin", { cache: "no-store" });
+      if (!yanit.ok) throw new Error("kasa.bin okunamadı");
+      return new Uint8Array(await yanit.arrayBuffer());
+    }
+
+    /* --- Siteyi bu sayfanın içinde çalıştırma --- */
+    function siteyiAc(dosyalar) {
+      const bloblar = new Map();
+      const blobAdresi = (yol) => {
+        if (!bloblar.has(yol)) bloblar.set(yol, URL.createObjectURL(new Blob([dosyalar.get(yol).bayt], { type: dosyalar.get(yol).tur })));
+        return bloblar.get(yol);
+      };
+      const temizYol = (adres) => {
+        if (!adres || /^(https?:|mailto:|tel:|blob:|data:|#)/.test(adres)) return null;
+        return adres.replace(/^\.\//, "").split(/[?#]/)[0];
+      };
+      const metin = (yol) => new TextDecoder().decode(dosyalar.get(yol).bayt);
+
+      // Sitenin fetch("data/...") istekleri kasadan karşılanır.
+      const asilFetch = window.fetch.bind(window);
+      window.fetch = (girdi, ayar) => {
+        const yol = temizYol(typeof girdi === "string" ? girdi : girdi.url);
+        if (yol && dosyalar.has(yol)) {
+          return Promise.resolve(new Response(dosyalar.get(yol).bayt, { status: 200, headers: { "Content-Type": dosyalar.get(yol).tur } }));
+        }
+        return asilFetch(girdi, ayar);
+      };
+
+      // Sitenin betiği görsel adresini setAttribute ile verir; adres daha baştan kasadaki dosyaya çevrilir.
+      const asilSet = Element.prototype.setAttribute;
+      Element.prototype.setAttribute = function (ad, deger) {
+        if (this.tagName === "IMG" && ad === "src") {
+          const yol = temizYol(deger);
+          if (yol && dosyalar.has(yol)) deger = blobAdresi(yol);
+        }
+        return asilSet.call(this, ad, deger);
+      };
+
+      // Sonradan eklenen görsellerin adresleri kasadaki dosyaya çevrilir (yedek önlem).
+      const gorselCevir = (img) => {
+        const yol = temizYol(img.getAttribute("src"));
+        if (yol && dosyalar.has(yol)) img.src = blobAdresi(yol);
+      };
+      new MutationObserver((kayitlar) => {
+        for (const k of kayitlar) {
+          if (k.type === "attributes" && k.target.tagName === "IMG") gorselCevir(k.target);
+          for (const n of k.addedNodes || []) {
+            if (n.nodeType !== 1) continue;
+            if (n.tagName === "IMG") gorselCevir(n);
+            n.querySelectorAll?.("img").forEach(gorselCevir);
+          }
+        }
+      }).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["src"] });
+
+      // Sitenin kurduğu tekrarlı zamanlayıcılar (kayan bant) kaydedilir; sayfa değişince yalnız onlar durdurulur.
+      const siteZamanlayicilari = new Set();
+      const asilInterval = window.setInterval.bind(window);
+      window.setInterval = (...args) => { const id = asilInterval(...args); siteZamanlayicilari.add(id); return id; };
+
+      let sayac = 0;
+      async function sayfaAc(sayfa) {
+        if (!dosyalar.has(sayfa)) sayfa = "index.html";
+        siteZamanlayicilari.forEach((id) => clearInterval(id));
+        siteZamanlayicilari.clear();
+
+        const doc = new DOMParser().parseFromString(metin(sayfa), "text/html");
+        document.title = doc.title;
+        document.head.querySelectorAll("[data-site]").forEach((n) => n.remove());
+        doc.head.querySelectorAll('link[rel="stylesheet"], link[rel="icon"]').forEach((link) => {
+          const yol = temizYol(link.getAttribute("href"));
+          if (yol && !dosyalar.has(yol)) return;
+          const yeni = document.createElement("link");
+          yeni.rel = link.rel;
+          yeni.href = yol ? blobAdresi(yol) : link.href;
+          if (link.type) yeni.type = link.type;
+          yeni.dataset.site = "";
+          document.head.append(yeni);
+        });
+        doc.body.querySelectorAll("img[src]").forEach((img) => {
+          const yol = temizYol(img.getAttribute("src"));
+          if (yol && dosyalar.has(yol)) img.setAttribute("src", blobAdresi(yol));
+        });
+        const betikler = [...doc.body.querySelectorAll("script[src]")].map((s) => temizYol(s.getAttribute("src")));
+        doc.body.querySelectorAll("script").forEach((s) => s.remove());
+
+        document.body.className = doc.body.className;
+        document.body.replaceChildren(...[...doc.body.childNodes].map((n) => document.importNode(n, true)));
+        const rozet = document.createElement("span");
+        rozet.className = "onizleme-rozeti";
+        rozet.textContent = "Önizleme";
+        document.body.append(rozet);
+
+        for (const yol of betikler) {
+          if (!yol || !dosyalar.has(yol)) continue;
+          // Her sayfada betiğin yeniden çalışması için yeni adres.
+          const adres = URL.createObjectURL(new Blob([metin(yol) + `\n//# sayfa ${++sayac}`], { type: "text/javascript" }));
+          await import(adres);
+        }
+        const hedef = location.hash ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
+        hedef ? hedef.scrollIntoView() : window.scrollTo(0, 0);
+      }
+
+      function adrestenSayfa() {
+        return new URLSearchParams(location.search).get("sayfa") || "index.html";
+      }
+
+      // Site içi bağlantılar sayfadan çıkmadan açılır.
+      document.addEventListener("click", (olay) => {
+        const a = olay.target.closest?.("a[href]");
+        if (!a || a.target === "_blank" || olay.metaKey || olay.ctrlKey) return;
+        const href = a.getAttribute("href");
+        if (href.startsWith("#")) return;
+        const yol = temizYol(href);
+        if (!yol || !dosyalar.has(yol) || !yol.endsWith(".html")) return;
+        olay.preventDefault();
+        const hedef = new URL(href, "https://site.local/");
+        const params = new URLSearchParams(hedef.search);
+        params.set("sayfa", yol);
+        history.pushState(null, "", `?${params}${hedef.hash}`);
+        sayfaAc(yol);
+      });
+      window.addEventListener("popstate", () => sayfaAc(adrestenSayfa()));
+
+      document.getElementById("kilit-stil").remove();
+      document.body.classList.remove("kilit");
+      sayfaAc(adrestenSayfa());
+    }
+
+    async function dene(anahtar, kasa) {
+      const dosyalar = await coz(anahtar, kasa);
+      siteyiAc(dosyalar);
+    }
+
+    // Aynı sekmede daha önce girildiyse şifre yeniden sorulmaz.
+    (async () => {
+      const kayitli = sessionStorage.getItem(SAKLA);
+      if (!kayitli) { document.getElementById("sifre").focus(); return; }
+      try {
+        const anahtar = await crypto.subtle.importKey("jwk", JSON.parse(kayitli), { name: "AES-GCM" }, false, ["decrypt"]);
+        await dene(anahtar, await kasaGetir());
+      } catch {
+        sessionStorage.removeItem(SAKLA);
+      }
+    })();
+
+    form.addEventListener("submit", async (olay) => {
+      olay.preventDefault();
+      const sifre = document.getElementById("sifre").value;
+      if (!sifre) { durum.textContent = "Şifreyi yazın."; return; }
+      dugme.disabled = true;
+      durum.textContent = "Açılıyor…";
+      try {
+        const kasa = await kasaGetir();
+        const anahtar = await anahtarUret(sifre, kasa.slice(0, 16));
+        let dosyalar;
+        try { dosyalar = await coz(anahtar, kasa); }
+        catch { durum.textContent = "Şifre yanlış. Yeniden deneyin."; dugme.disabled = false; return; }
+        sessionStorage.setItem(SAKLA, JSON.stringify(await crypto.subtle.exportKey("jwk", anahtar)));
+        siteyiAc(dosyalar);
+      } catch (hata) {
+        console.error(hata);
+        durum.textContent = "Önizleme yüklenemedi. Bağlantınızı kontrol edip yeniden deneyin.";
+        dugme.disabled = false;
+      }
+    });
+  })();
+  </script>
+</body>
+</html>
